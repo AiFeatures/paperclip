@@ -212,6 +212,7 @@ describeEmbeddedPostgres("activity service", () => {
       lastUsefulActionAt: new Date("2026-04-18T19:59:00.000Z"),
       nextAction: "Review the completed output.",
     });
+    expect(runs[0]).not.toHaveProperty("contextSnapshot");
   });
 
   it("backfills missing liveness for completed issue runs before returning the ledger", async () => {
@@ -424,7 +425,7 @@ describeEmbeddedPostgres("activity service", () => {
     expect(backfilledRun).toMatchObject({
       runId,
       livenessState: "plan_only",
-      livenessReason: "Run described future work without concrete action evidence",
+      livenessReason: "Run described runnable future work without concrete action evidence",
       lastUsefulActionAt: null,
     });
   });
@@ -530,7 +531,7 @@ describeEmbeddedPostgres("activity service", () => {
     expect(backfilledRun).toMatchObject({
       runId,
       livenessState: "plan_only",
-      livenessReason: "Run described future work without concrete action evidence",
+      livenessReason: "Run described runnable future work without concrete action evidence",
       lastUsefulActionAt: null,
     });
   });

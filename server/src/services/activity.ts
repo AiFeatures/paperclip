@@ -4,6 +4,8 @@ import {
   activityLog,
   agents,
   documentRevisions,
+  environmentLeases,
+  environments,
   heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
@@ -14,6 +16,7 @@ import {
 } from "@paperclipai/db";
 import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY } from "@paperclipai/shared";
 import { logger } from "../middleware/logger.js";
+import { visibleIssueCondition } from "./issue-visibility.js";
 import { classifyRunLiveness } from "./run-liveness.js";
 
 export interface ActivityFilters {
@@ -352,7 +355,7 @@ export function activityService(db: Db) {
             ...conditions,
             or(
               sql`${activityLog.entityType} != 'issue'`,
-              isNull(issues.hiddenAt),
+              visibleIssueCondition(),
             ),
           ),
         )
@@ -385,6 +388,8 @@ export function activityService(db: Db) {
           finishedAt: heartbeatRuns.finishedAt,
           createdAt: heartbeatRuns.createdAt,
           invocationSource: heartbeatRuns.invocationSource,
+          responsibleUserId: heartbeatRuns.responsibleUserId,
+          errorCode: heartbeatRuns.errorCode,
           usageJson: summarizedUsageJson,
           resultJson: summarizedResultJson,
           logBytes: heartbeatRuns.logBytes,
@@ -425,6 +430,8 @@ export function activityService(db: Db) {
         .orderBy(desc(heartbeatRuns.createdAt));
 
       if (runs.length === 0) return runs;
+      const runIds = runs.map((run) => run.runId);
+      if (runIds.length === 0) return runs;
 
       const exhaustionRows = await db
         .select({
@@ -434,7 +441,7 @@ export function activityService(db: Db) {
         .from(heartbeatRunEvents)
         .where(
           and(
-            inArray(heartbeatRunEvents.runId, runs.map((run) => run.runId)),
+            inArray(heartbeatRunEvents.runId, runIds),
             eq(heartbeatRunEvents.eventType, "lifecycle"),
             sql`${heartbeatRunEvents.message} like 'Bounded retry exhausted%'`,
           ),
@@ -447,10 +454,68 @@ export function activityService(db: Db) {
         retryExhaustedReasonByRunId.set(row.runId, row.message);
       }
 
-      return runs.map((run) => ({
-        ...run,
-        retryExhaustedReason: retryExhaustedReasonByRunId.get(run.runId) ?? null,
-      }));
+      const leaseRows = await db
+        .select({
+          lease: environmentLeases,
+          environment: {
+            id: environments.id,
+            name: environments.name,
+            driver: environments.driver,
+          },
+        })
+        .from(environmentLeases)
+        .innerJoin(environments, eq(environmentLeases.environmentId, environments.id))
+        .where(
+          and(
+            eq(environmentLeases.companyId, companyId),
+            inArray(environmentLeases.heartbeatRunId, runIds),
+          ),
+        )
+        .orderBy(desc(environmentLeases.lastUsedAt), desc(environmentLeases.createdAt));
+
+      const leaseByRunId = new Map<string, (typeof leaseRows)[number]>();
+      for (const row of leaseRows) {
+        if (row.lease.heartbeatRunId && !leaseByRunId.has(row.lease.heartbeatRunId)) {
+          leaseByRunId.set(row.lease.heartbeatRunId, row);
+        }
+      }
+
+      return runs.map((run) => {
+        const leaseRow = leaseByRunId.get(run.runId);
+        const leaseMetadata = leaseRow?.lease.metadata ?? null;
+        const workspacePath =
+          typeof leaseMetadata?.remoteCwd === "string" && leaseMetadata.remoteCwd.trim().length > 0
+            ? leaseMetadata.remoteCwd
+            : typeof leaseMetadata?.remoteWorkspacePath === "string" && leaseMetadata.remoteWorkspacePath.trim().length > 0
+              ? leaseMetadata.remoteWorkspacePath
+              : null;
+        return {
+          ...run,
+          environment: leaseRow
+            ? {
+                id: leaseRow.environment.id,
+                name: leaseRow.environment.name,
+                driver: leaseRow.environment.driver,
+              }
+            : null,
+          environmentLease: leaseRow
+            ? {
+                id: leaseRow.lease.id,
+                status: leaseRow.lease.status,
+                leasePolicy: leaseRow.lease.leasePolicy,
+                provider: leaseRow.lease.provider,
+                providerLeaseId: leaseRow.lease.providerLeaseId,
+                executionWorkspaceId: leaseRow.lease.executionWorkspaceId,
+                workspacePath,
+                failureReason: leaseRow.lease.failureReason,
+                cleanupStatus: leaseRow.lease.cleanupStatus,
+                acquiredAt: leaseRow.lease.acquiredAt,
+                releasedAt: leaseRow.lease.releasedAt,
+              }
+            : null,
+          retryExhaustedReason: retryExhaustedReasonByRunId.get(run.runId) ?? null,
+        };
+      });
     },
 
     issuesForRun: async (runId: string) => {
@@ -479,7 +544,7 @@ export function activityService(db: Db) {
             eq(activityLog.companyId, run.companyId),
             eq(activityLog.runId, runId),
             eq(activityLog.entityType, "issue"),
-            isNull(issues.hiddenAt),
+            visibleIssueCondition(),
           ),
         )
         .orderBy(issueIdAsText);
@@ -505,7 +570,7 @@ export function activityService(db: Db) {
           and(
             eq(issues.companyId, run.companyId),
             eq(issues.id, contextIssueId),
-            isNull(issues.hiddenAt),
+            visibleIssueCondition(),
           ),
         )
         .then((rows) => rows[0] ?? null);
