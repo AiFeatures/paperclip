@@ -12,6 +12,7 @@ export const heartbeatRuns = pgTable(
     invocationSource: text("invocation_source").notNull().default("on_demand"),
     triggerDetail: text("trigger_detail"),
     status: text("status").notNull().default("queued"),
+    responsibleUserId: text("responsible_user_id"),
     startedAt: timestamp("started_at", { withTimezone: true }),
     finishedAt: timestamp("finished_at", { withTimezone: true }),
     error: text("error"),
@@ -34,6 +35,10 @@ export const heartbeatRuns = pgTable(
     processPid: integer("process_pid"),
     processGroupId: integer("process_group_id"),
     processStartedAt: timestamp("process_started_at", { withTimezone: true }),
+    lastOutputAt: timestamp("last_output_at", { withTimezone: true }),
+    lastOutputSeq: integer("last_output_seq").notNull().default(0),
+    lastOutputStream: text("last_output_stream"),
+    lastOutputBytes: bigint("last_output_bytes", { mode: "number" }),
     retryOfRunId: uuid("retry_of_run_id").references((): AnyPgColumn => heartbeatRuns.id, {
       onDelete: "set null",
     }),
@@ -59,10 +64,29 @@ export const heartbeatRuns = pgTable(
       table.agentId,
       table.startedAt,
     ),
+    companyResponsibleUserIdx: index("heartbeat_runs_company_responsible_user_idx").on(
+      table.companyId,
+      table.responsibleUserId,
+      table.createdAt,
+    ),
     companyLivenessIdx: index("heartbeat_runs_company_liveness_idx").on(
       table.companyId,
       table.livenessState,
       table.createdAt,
+    ),
+    companyStatusLastOutputIdx: index("heartbeat_runs_company_status_last_output_idx").on(
+      table.companyId,
+      table.status,
+      table.lastOutputAt,
+    ),
+    companyStatusProcessStartedIdx: index("heartbeat_runs_company_status_process_started_idx").on(
+      table.companyId,
+      table.status,
+      table.processStartedAt,
+    ),
+    companyCreatedAtDescIdx: index("heartbeat_runs_company_created_at_desc_idx").on(
+      table.companyId,
+      table.createdAt.desc(),
     ),
   }),
 );
