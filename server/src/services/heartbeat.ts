@@ -436,7 +436,11 @@ function readHeartbeatRunErrorFamily(
   if (run.errorCode === "provider_quota") {
     return "provider_quota";
   }
-  if (run.errorCode === "codex_transient_upstream" || run.errorCode === "claude_transient_upstream") {
+  if (
+    run.errorCode === "codex_transient_upstream" ||
+    run.errorCode === "claude_transient_upstream" ||
+    run.errorCode === "codex_harness_crash"
+  ) {
     return "transient_upstream";
   }
   return null;
@@ -5033,6 +5037,9 @@ export function buildPaperclipTaskMarkdown(input: {
     status?: string | null;
   } | null;
   acceptedPlanContinuation?: boolean;
+  // false builds the compact variant used for resume deltas, where the session
+  // already received the description with the assignment.
+  includeDescription?: boolean;
 }) {
   const quoteTaskScalar = (value: string) => JSON.stringify(value);
   const fenceTaskText = (value: string) => {
@@ -5099,7 +5106,7 @@ export function buildPaperclipTaskMarkdown(input: {
         "Create child issues from the approved plan only. Do not write code or perform implementation work on the source issue.",
       );
     }
-    const description = issue.description?.trim();
+    const description = input.includeDescription === false ? "" : issue.description?.trim();
     if (description) {
       lines.push("", "Issue description:", fenceTaskText(description));
     }
@@ -12175,7 +12182,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     } else {
       delete context[PAPERCLIP_WAKE_PAYLOAD_KEY];
     }
-    const taskMarkdown = buildPaperclipTaskMarkdown({
+    const taskMarkdownInput = {
       issue: issueRef
         ? {
             id: issueRef.id,
@@ -12194,7 +12201,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       acceptedPlanContinuation:
         readNonEmptyString(context.workspaceRefreshReason) === "accepted_plan_confirmation"
         && Object.keys(parseObject(context.acceptedPlanWakeRouting)).length === 0,
-    });
+    };
+    const taskMarkdown = buildPaperclipTaskMarkdown(taskMarkdownInput);
+    const taskMarkdownCompact = buildPaperclipTaskMarkdown({ ...taskMarkdownInput, includeDescription: false });
     if (issueRef) {
       context.paperclipIssue = {
         id: issueRef.id,
@@ -12215,6 +12224,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       context.paperclipTaskMarkdown = taskMarkdown;
     } else {
       delete context.paperclipTaskMarkdown;
+    }
+    if (taskMarkdownCompact && taskMarkdownCompact !== taskMarkdown) {
+      context.paperclipTaskMarkdownCompact = taskMarkdownCompact;
+    } else {
+      delete context.paperclipTaskMarkdownCompact;
     }
     const requestedExecutionWorkspaceId = readNonEmptyString(issueRef?.executionWorkspaceId);
     const existingExecutionWorkspace =
